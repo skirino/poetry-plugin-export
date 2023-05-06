@@ -32,6 +32,7 @@ class Exporter:
     EXPORT_METHODS = {
         FORMAT_CONSTRAINTS_TXT: "_export_constraints_txt",
         FORMAT_REQUIREMENTS_TXT: "_export_requirements_txt",
+        "bazel-workspace": "_export_bazel_workspace",
     }
 
     def __init__(self, poetry: Poetry, io: IO) -> None:
@@ -214,3 +215,41 @@ class Exporter:
     _export_requirements_txt = partialmethod(
         _export_generic_txt, with_extras=True, allow_editable=True
     )
+
+    def _export_bazel_workspace(self, cwd: Path, output: IO | str) -> None:
+        from poetry.utils.env import Env, EnvManager
+        from poetry.installation.chooser import Chooser
+        from poetry.poetry import Poetry
+
+        env_manager = EnvManager(self._poetry)
+        env = env_manager.create_venv(self._io)
+        chooser = Chooser(self._poetry.pool, env)
+        root = self._poetry.package.with_dependency_groups(list(self._groups), only=True)
+
+        http_archives = []
+        for dependency_package in get_project_dependency_packages(
+            self._poetry.locker,
+            project_requires=root.all_requires,
+            project_python_marker=root.python_marker,
+            extras=self._extras,
+        ):
+            http_archives.append(self._http_archive(dependency_package.package, chooser))
+        content = "\n".join(http_archives)
+
+        if isinstance(output, IO):
+            output.write(content)
+        else:
+            with (cwd / output).open("w", encoding="utf-8") as txt:
+                txt.write(content)
+
+    def _http_archive(self, package: Package, chooser: Chooser) -> str:
+        url = chooser.choose_for(package).url
+        hash = url.split("#sha256=")[1]
+        import textwrap
+        return textwrap.dedent(f"""\
+        http_archive(
+            name = "monorepo_pip_deps_{package.name}",
+            sha256 = "{hash}",
+            url = "{url}",
+        )
+        """)
